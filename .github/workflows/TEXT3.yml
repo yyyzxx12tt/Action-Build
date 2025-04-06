@@ -1,4 +1,5 @@
-name: Build Ultra All
+name: Build OnePlus_SukiSU Ultra All
+
 on:
   workflow_dispatch:
     inputs:
@@ -31,8 +32,14 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         with:
@@ -49,10 +56,17 @@ jobs:
           git config --global user.name "Numbersf"
           git config --global user.email "263623064@qq.com"
 
+      - name: Setup cache
+        uses: actions/cache@v3
+        id: kernel-cache
+        with:
+          path: kernel_workspace
+          key: ${{ runner.os }}-${{ inputs.CPU }}-${{ inputs.FEIL }}-${{ inputs.ANDROID_VERSION }}-${{ inputs.KERNEL_VERSION }}
+
       - name: Install dependencies
         run: |
           sudo apt update && sudo apt upgrade -y
-          sudo apt install -y python3 git curl aarch64-linux-gnu-gcc
+          sudo apt install -y python3 git curl bc bison flex libssl-dev libelf-dev
 
       - name: Install repo tool
         run: |
@@ -61,15 +75,16 @@ jobs:
           sudo mv ~/repo /usr/local/bin/repo
 
       - name: Initialize repo and sync
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
         run: |
           mkdir kernel_workspace && cd kernel_workspace
-          repo init -u https://github.com/OnePlusOSS/kernel_manifest.git -b refs/heads/oneplus/${{ github.event.inputs.CPU }} -m ${{ github.event.inputs.FEIL }}.xml --depth=1
-          repo sync
+          repo init -u https://github.com/OnePlusOSS/kernel_manifest.git -b refs/heads/oneplus/${{ inputs.CPU }} -m ${{ inputs.FEIL }}.xml --depth=1
+          repo sync -j$(nproc)
           rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
           rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
           sed -i 's/ -dirty//g' kernel_platform/common/scripts/setlocalversion
           sed -i 's/ -dirty//g' kernel_platform/msm-kernel/scripts/setlocalversion
-      
+
       - name: Add KernelSU-SukiSU-Ultra
         run: |
           cd kernel_workspace/kernel_platform
@@ -78,116 +93,60 @@ jobs:
           KSU_VERSION=$(expr $(/usr/bin/git rev-list --count main) "+" 12506)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
 
-      - name: Apply SUSFS Patches SukiSU
+      - name: Apply patches
         run: |
           cd kernel_workspace
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.KERNEL_VERSION }}
-          git clone https://github.com/ShirkNeko/SukiSU_patch.git
-          cd kernel_platform
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${{ inputs.ANDROID_VERSION }}-${{ inputs.KERNEL_VERSION }}
+          git clone --depth=1 https://github.com/ShirkNeko/SukiSU_patch.git
 
-          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.KERNEL_VERSION }}.patch ./common/
-          cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
-          cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
-          
-          cd ./common
-          patch -p1 < 50_add_susfs_in_gki-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.KERNEL_VERSION }}.patch || true
+          cd kernel_platform/common
+          patch -p1 -F 3 < ../../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ inputs.ANDROID_VERSION }}-${{ inputs.KERNEL_VERSION }}.patch || true
+          patch -p1 -F 3 < ../../SukiSU_patch/69_hide_stuff.patch
+          patch -p1 -F 3 < ../../SukiSU_patch/hooks/new_hooks.patch
 
-      - name: Apply Hide Stuff Patches
-        run: |
-          cd kernel_workspace/kernel_platform/common
-          cp ../../SukiSU_patch/69_hide_stuff.patch ./
-          patch -p1 -F 3 < 69_hide_stuff.patch
-
-      - name: Apply New Hooks Patches
-        run: |
-          cd kernel_workspace/kernel_platform/common
-          cp ../../SukiSU_patch/hooks/new_hooks.patch ./
-          patch -p1 -F 3 < new_hooks.patch
-
-      - name: Add SUSFS Configuration Settings
+      - name: Configure kernel
         run: |
           cd kernel_workspace/kernel_platform
           echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_MANUAL_HOOK=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
           sed -i 's/check_defconfig//' ./common/build.config.gki
 
-      - name: Add make name
+      - name: Build kernel
         run: |
-          cd kernel_workspace/kernel_platform
-          sed -i "/stable_scmversion_cmd/s/-maybe-dirty//g" ./build/kernel/kleaf/impl/stamp.bzl
+          cd kernel_workspace
+          if [ ${{ inputs.CPU }} == 'sm8650' ]; then
+            ./kernel_platform/build_with_bazel.py -t ${{ inputs.CPUD }} gki
+          else
+            LTO=thin ./kernel_platform/oplus/build/oplus_build_kernel.sh ${{ inputs.CPUD }} gki
+          fi
 
-      - name: Build kernel with make
+      - name: Prepare AnyKernel3
         run: |
-          cd kernel_workspace/kernel_platform
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export KBUILD_EXTRA_FLAGS="LTO=thin"
-          
-          make O=out/msm-kernel-${{ github.event.inputs.CPUD }}-gki \
-               ARCH=${ARCH} \
-               CROSS_COMPILE=${CROSS_COMPILE} \
-               gki_defconfig
-               
-          make -j$(nproc) O=out/msm-kernel-${{ github.event.inputs.CPUD }}-gki \
-               ARCH=${ARCH} \
-               CROSS_COMPILE=${CROSS_COMPILE}
-               
-          ls -l out/msm-kernel-${{ github.event.inputs.CPUD }}-gki/arch/arm64/boot/Image
-
-      - name: Make AnyKernel3
-        run: |
-          git clone https://github.com/Numbersf/AnyKernel3 --depth=1
-          rm -rf ./AnyKernel3/.git
-          cp kernel_workspace/kernel_platform/out/msm-kernel-${{ github.event.inputs.CPUD }}-gki/arch/arm64/boot/Image ./AnyKernel3/
-          cp kernel_workspace/kernel_platform/out/msm-kernel-${{ github.event.inputs.CPUD }}-gki/arch/arm64/boot/Image ./kernel_workspace/kernel
-
-      - name: Apply patch_linux and replace Image
-        run: |
-          cd kernel_workspace/kernel_platform/out/msm-kernel-${{ github.event.inputs.CPUD }}-gki/arch/arm64/boot
+          git clone --depth=1 https://github.com/Numbersf/AnyKernel3
+          cp kernel_platform/out/msm-kernel-${{ inputs.CPUD }}-gki/dist/Image AnyKernel3/
+          cd kernel_platform/out/msm-kernel-${{ inputs.CPUD }}-gki/dist
           curl -LO https://raw.githubusercontent.com/Numbersf/Action-Build/main/patch_linux
-          chmod +x patch_linux
-          ./patch_linux
-          rm -f Image
+          chmod +x patch_linux && ./patch_linux
           mv oImage Image
-          cp Image $GITHUB_WORKSPACE/AnyKernel3/Image
+          cp Image $GITHUB_WORKSPACE/AnyKernel3/
 
-      - name: Download Latest SUSFS Module from CI
-        if: ${{ github.event.inputs.SUSFS_CI == 'true' }}
+      - name: Download SUSFS module
         run: |
-          LATEST_RUN_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs" | jq -r '.workflow_runs[0].id')
-          
-          ARTIFACT_URL=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs/$LATEST_RUN_ID/artifacts" | jq -r '.artifacts[0].archive_download_url')
-          
-          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -o ksu_module_susfs.zip "$ARTIFACT_URL"
-          cp ksu_module_susfs.zip ./AnyKernel3/
+          if ${{ inputs.SUSFS_CI }}; then
+            LATEST_RUN_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs" | jq -r '.workflow_runs[0].id')
+            ARTIFACT_URL=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs/$LATEST_RUN_ID/artifacts" | jq -r '.artifacts[0].archive_download_url')
+            curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -o ksu_module_susfs.zip "$ARTIFACT_URL"
+          else
+            wget -qO- https://github.com/sidex15/ksu_module_susfs/releases/latest/download/ksu_module_susfs_1.5.2+.zip > ksu_module_susfs.zip
+          fi
+          cp ksu_module_susfs.zip AnyKernel3/
 
-      - name: Download Latest SUSFS Module from Release
-        if: ${{ github.event.inputs.SUSFS_CI == 'false' }}
-        run: |
-          wget https://github.com/sidex15/ksu_module_susfs/releases/latest/download/ksu_module_susfs_1.5.2+.zip
-          cp ksu_module_susfs_1.5.2+.zip ./AnyKernel3/
-   
-      - name: Upload AnyKernel3
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-         name: AnyKernel3_KernelSU_${{ env.KSUVER }}_${{ github.event.inputs.FEIL }}
-         path: ./AnyKernel3/*
+          name: AnyKernel3_KernelSU_${{ env.KSUVER }}_${{ inputs.FEIL }}
+          path: AnyKernel3/*
+          retention-days: 30

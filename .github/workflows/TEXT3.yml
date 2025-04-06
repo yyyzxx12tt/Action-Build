@@ -1,4 +1,4 @@
-name: Build TEXT3
+name: Ultra All
 on:
   workflow_dispatch:
     inputs:

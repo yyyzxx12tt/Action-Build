@@ -25,10 +25,17 @@ on:
       SUSFS_CI:
         description: "SUSFS模块下载是否调用CI？"
         required: true
+        type: boolean
         default: 'true'
       LZ4:
         description: "是否启用lz4？"
         required: true
+        type: boolean
+        default: 'true'
+      VFS:
+        description: "是否启用VFS？"
+        required: true
+        type: boolean
         default: 'true'
 
 jobs:
@@ -36,7 +43,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 最大化磁盘空间
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         with:
@@ -48,26 +54,22 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
 
-      # Git 配置
       - name: Configure Git
         run: |
           git config --global user.name "Numbersf"
           git config --global user.email "263623064@qq.com"
 
-      # 安装依赖
       - name: Install dependencies
         run: |
           sudo apt update && sudo apt upgrade -y
           sudo apt install -y python3 git curl
 
-      # 安装 repo 工具
       - name: Install repo tool
         run: |
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
           chmod a+x ~/repo
           sudo mv ~/repo /usr/local/bin/repo
 
-      # 初始化并同步仓库
       - name: Initialize repo and sync
         run: |
           mkdir kernel_workspace && cd kernel_workspace
@@ -83,11 +85,11 @@ jobs:
           sed -i 's/ -dirty//g' common/scripts/setlocalversion
           sed -i 's/ -dirty//g' msm-kernel/scripts/setlocalversion
           sed -i 's/ -dirty//g' external/dtc/scripts/setlocalversion
-          sed -i '$i res=$(echo "$res" | sed '"'s/-dirty//g'"')' common/scripts/setlocalversion
+          sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' common/scripts/setlocalversion
           git add -A
           git commit -m "Force remove -dirty suffix from kernel version"
 
-      # 添加 KernelSU & SukiSU Ultra
+      # 添加 SukiSU Ultra
       - name: Add KernelSU-SukiSU Ultra
         run: |
           cd kernel_workspace/kernel_platform
@@ -115,6 +117,7 @@ jobs:
             cp -r ../SukiSU_patch/other/lz4k/include/linux/* ./common/include/linux
             cp -r ../SukiSU_patch/other/lz4k/lib/* ./common/lib
             cp -r ../SukiSU_patch/other/lz4k/crypto/* ./common/crypto
+          fi
 
           cd ./common
           patch -p1 < 50_add_susfs_in_gki-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.KERNEL_VERSION }}.patch || true
@@ -128,29 +131,41 @@ jobs:
           patch -p1 -F 3 < 69_hide_stuff.patch
 
       # VFS补丁 + lz4钩子
-      - name: Apply New Hooks Patches
+      - name: Apply VFS and LZ4KD
         run: |
           cd kernel_workspace/kernel_platform/common
+          if [ "${{ github.event.inputs.VFS }}" = "true" ]; then
           cp ../../SukiSU_patch/hooks/new_hooks.patch ./
           echo "正在打vfs补丁"
           patch -p1 -F 3 < new_hooks.patch
-          echo "完成"
-
+          echo "vfs_patch完成"
+          fi
+          
           if [ "${{ github.event.inputs.LZ4 }}" = "true" ]; then
             cp ../../SukiSU_patch/other/lz4k_patch/${{ github.event.inputs.KERNEL_VERSION }}/lz4kd.patch ./
+            echo "正在打lz4kd补丁"
             patch -p1 -F 3 < lz4kd.patch || true
+            patch -p1 -F 3 < lz4.patch || true
+            echo "lz4_patch完成"
+          fi
 
       # 配置 SUSFS
       - name: Add SUSFS Configuration Settings
+        if: ${{ github.event.inputs.VFS == 'true' }}
         run: |
           cd kernel_workspace/kernel_platform
-          # KSU config
+          # SukiSU Ultra config
           echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
 
           # VFS config
+          if [ "${{ github.event.inputs.VFS }}" = "true" ]; then
           echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
+          if [ "${{ github.event.inputs.VFS }}" = "false" ]; then
+          echo "CONFIG_KSU_SUSFS_SUS_SU=y" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
 
           # SUSFS config
           echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -169,32 +184,51 @@ jobs:
           echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
           # Remove check_defconfig
+          if [ "${{ github.event.inputs.LZ4 }}" = "false" ]; then
           sed -i 's/check_defconfig//' ./common/build.config.gki
+          fi
 
-      # 添加 LZ4 Config
-      - name: Add LZ4 Configuration Settings
-        if: ${{ github.event.inputs.LZ4 == 'true' }}
-        run: |
-          cd kernel_workspace/kernel_platform
-          # lz4
+          # 添加 LZ4 Config
+          if [ "${{ github.event.inputs.LZ4 }}" = "true" ]; then
+          echo "CONFIG_CRYPTO_LZ4=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_CRYPTO_LZ4HC=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_CRYPTO_LZ4K=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_CRYPTO_LZ4KD=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_CRYPTO_LZ4HC=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_CRYPTO_842=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_CRYPTO_LZO=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_CRYPTO_ZSTD=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_CRYPTO_XZ=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_CRYPTO_DEFLATE=y" >> ./common/arch/arm64/configs/gki_defconfig
+
+          # ZRAM/ZSWAP配置
+          echo "CONFIG_ZRAM=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_ZRAM_WRITEBACK=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_ZSMALLOC=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_ZSMALLOC_CHAIN_SIZE=8" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_ZSWAP=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_ZPOOL=y" >> ./common/arch/arm64/configs/gki_defconfig
+
+          # 其他内核配置
+          echo "CONFIG_MODULE_SIG=n" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_MODULE_SIG_ALL=n" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_MODULE_SIG_SHA512=n" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_MODULE_SIG_HASH=sha512" >> ./common/arch/arm64/configs/gki_defconfig
+
           # Remove check_defconfig
           sed -i 's/check_defconfig//' ./common/build.config.gki
+          fi
 
       - name: Build kernel
-        if: github.event.inputs.CPU == 'sm8650'
+        if: github.event.inputs.CPU == 'sm8650' 
         run: |
           cd kernel_workspace
           ./kernel_platform/build_with_bazel.py -t ${{ github.event.inputs.CPUD }} gki
           
       - name: Fallback build kernel
-        if: github.event.inputs.CPU != 'sm8650'
+        if: github.event.inputs.CPU != 'sm8650' 
         run: |
-          cd kernel_workspace
-          LTO=thin ./kernel_platform/oplus/build/oplus_build_kernel.sh ${{ github.event.inputs.CPUD }} gki
+         cd kernel_workspace
+         LTO=thin ./kernel_platform/oplus/build/oplus_build_kernel.sh ${{ github.event.inputs.CPUD }} gki
 
       - name: Make AnyKernel3
         run: |
